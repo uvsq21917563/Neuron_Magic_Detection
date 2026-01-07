@@ -2,74 +2,97 @@ import os
 import json
 import time
 import requests
+import pandas as pd
 
 # --- CONFIGURATION ---
 DATA_DIR = "mtg_dataset"
+IMG_DIR = os.path.join(DATA_DIR, "images")
 JSON_FILE = "default_cards.json"
-# On limite le nombre d'images pour le test (mettez None pour tout télécharger)
-LIMIT_PER_COLOR = 100 
-# Tailles possibles : 'small', 'normal', 'large', 'png', 'art_crop'
-IMAGE_SIZE = 'normal' 
+CSV_FILE = os.path.join(DATA_DIR, "metadata.csv")
+LIMIT = 100
+IMAGE_SIZE = 'normal'
 
-def download_bulk_metadata():
-    """Télécharge le fichier JSON global de Scryfall s'il n'existe pas déjà."""
-    if not os.path.exists(JSON_FILE):
-        print("Récupération de l'URL du bulk data...")
-        resp = requests.get("https://api.scryfall.com/bulk-data")
-        bulk_url = next(item for item in resp.json()['data'] if item['type'] == 'default_cards')['download_uri']
-        
-        print(f"Téléchargement du JSON global (cela peut prendre du temps)...")
-        r = requests.get(bulk_url, stream=True)
-        with open(JSON_FILE, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-    return JSON_FILE
+# Types principaux que nous voulons classifier
+TARGET_TYPES = ['Creature', 'Instant', 'Sorcery', 'Enchantment', 'Artifact', 'Planeswalker', 'Land']
 
-def setup_folders(colors):
-    """Crée un dossier pour chaque couleur."""
-    for color in colors:
-        path = os.path.join(DATA_DIR, color)
-        if not os.path.exists(path):
-            os.makedirs(path)
+def setup():
+    if not os.path.exists(IMG_DIR):
+        os.makedirs(IMG_DIR)
 
-def download_images():
+def get_main_type(type_line):
+    """Extrait le type principal d'une ligne de type (ex: 'Legendary Creature — Elf' -> 'Creature')"""
+    for t in TARGET_TYPES:
+        if t in type_line:
+            return t
+    return "Other"
+
+def download_dataset():
+    setup()
     with open(JSON_FILE, 'r', encoding='utf-8') as f:
         cards = json.load(f)
 
-    # On définit les couleurs cibles (W=Blanc, U=Bleu, B=Noir, R=Rouge, G=Vert)
-    color_map = {'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green'}
-    setup_folders(color_map.values())
-    
-    counts = {c: 0 for c in color_map.keys()}
+    data_list = []
+    count = 0
 
-    print("Début du téléchargement des images...")
+    print(f"Extraction des données (Objectif : {LIMIT} images)...")
+
     for card in cards:
-        # On ne prend que les cartes d'une seule couleur et qui ont une image
-        if 'colors' in card and len(card['colors']) == 1:
-            color_code = card['colors'][0]
-            
-            if color_code in color_map and counts[color_code] < LIMIT_PER_COLOR:
-                if 'image_uris' in card and IMAGE_SIZE in card['image_uris']:
-                    img_url = card['image_uris'][IMAGE_SIZE]
-                    color_name = color_map[color_code]
-                    
-                    # Nettoyage du nom de fichier
-                    file_name = f"{card['id']}.jpg"
-                    file_path = os.path.join(DATA_DIR, color_name, file_name)
-                    
-                    if not os.path.exists(file_path):
-                        # Respecter le rate limit de Scryfall (50-100ms entre chaque requête)
-                        time.sleep(0.1) 
-                        img_data = requests.get(img_url).content
-                        with open(file_path, 'wb') as handler:
-                            handler.write(img_data)
-                        
-                        counts[color_code] += 1
-                        if sum(counts.values()) % 10 == 0:
-                            print(f"Progression : {counts}")
+        if count >= LIMIT:
+            break
 
-    print("Téléchargement terminé !")
+        # On saute les cartes sans image ou sans identité de couleur
+        if 'image_uris' not in card or 'color_identity' not in card or 'type_line' not in card:
+            continue
+
+        # 1. Extraction de l'Identité Couleur (Multi-label)
+        # On crée une colonne par couleur (1 si présente, 0 sinon)
+        identity = card['color_identity']
+        colors = {
+            'is_white': 1 if 'W' in identity else 0,
+            'is_blue': 1 if 'U' in identity else 0,
+            'is_black': 1 if 'B' in identity else 0,
+            'is_red': 1 if 'R' in identity else 0,
+            'is_green': 1 if 'G' in identity else 0,
+            'is_colorless': 1 if len(identity) == 0 else 0
+        }
+
+        # 2. Extraction du Type
+        main_type = get_main_type(card['type_line'])
+        if main_type == "Other": continue # On ignore les types marginaux pour la propreté
+
+        # 3. Extraction de la Rareté
+        rarity = card['rarity']
+
+        # Téléchargement de l'image
+        img_url = card['image_uris'][IMAGE_SIZE]
+        file_name = f"{card['id']}.jpg"
+        file_path = os.path.join(IMG_DIR, file_name)
+
+        if not os.path.exists(file_path):
+            try:
+                time.sleep(0.1)
+                img_data = requests.get(img_url).content
+                with open(file_path, 'wb') as h:
+                    h.write(img_data)
+                
+                # Ajout aux métadonnées
+                row = {
+                    'image_path': file_name,
+                    'type': main_type,
+                    'rarity': rarity,
+                    **colors
+                }
+                data_list.append(row)
+                count += 1
+                if count % 50 == 0: print(f"Cartes téléchargées : {count}")
+            except Exception as e:
+                print(f"Erreur sur {card['name']}: {e}")
+
+    # Sauvegarde des métadonnées en CSV
+    df = pd.DataFrame(data_list)
+    df.to_csv(CSV_FILE, index=False)
+    print(f"\nTerminé ! {len(df)} cartes enregistrées dans {CSV_FILE}")
 
 if __name__ == "__main__":
-    download_bulk_metadata()
-    download_images()
+    # Assurez-vous d'avoir déjà le fichier default_cards.json (voir scripts précédents)
+    download_dataset()
