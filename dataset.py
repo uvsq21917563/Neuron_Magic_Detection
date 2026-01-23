@@ -142,6 +142,13 @@ inv_types = {v: k for k, v in train_dataset.types.items()}
 inv_rarities = {v: k for k, v in train_dataset.rarities.items()}
 color_names = ['Blanc', 'Bleu', 'Noir', 'Rouge', 'Vert', 'Incolore']
 
+# Variables pour vérifier la précision du modèle
+type_ok = 0
+rarity_ok = 0
+color_ok = 0
+total = 0
+
+
 with torch.no_grad():
     for i, batch in enumerate(test_loader):
         if batch is None: continue
@@ -163,6 +170,13 @@ with torch.no_grad():
         true_rarity_idx = rarities.item()
         true_colors = colors.cpu().numpy()[0]
 
+
+        total += 1
+        type_ok += int(pred_type_idx == true_type_idx)
+        rarity_ok += int(pred_rarity_idx == true_rarity_idx)
+        color_ok += int((pred_colors == true_colors).all())
+
+
         print(f"\n--- Carte n°{i+1} ---")
         
         # Affichage Type
@@ -178,4 +192,9 @@ with torch.no_grad():
         # Affichage Couleurs
         p_c = [color_names[j] for j, val in enumerate(pred_colors) if val == 1]
         t_c = [color_names[j] for j, val in enumerate(true_colors) if val == 1]
-        print(f"Couleurs: Prédit {p_c} | Réel   {t_c}")
+        print(f"Couleurs: Prédit {p_c} | Réel   {t_c} {'✅' if p_c == t_c else '❌'}")
+
+# Taux de précision sur type, rareté, couleur
+print(f"Précision sur le type    : {100 * type_ok / total:.2f}%")
+print(f"Précision sur la rareté : {100 * rarity_ok / total:.2f}%")
+print(f"Précision sur la couleur: {100 * color_ok / total:.2f}%")
