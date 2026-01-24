@@ -14,8 +14,8 @@ JSON_FILE = "default_cards.json"
 TRAIN_CSV = os.path.join(DATA_DIR, "Train.csv")
 TEST_CSV = os.path.join(DATA_DIR, "Test.csv")
 
-LIMIT_TRAIN = 100
-LIMIT_TEST = 20   
+LIMIT_TRAIN = 2000
+LIMIT_TEST = 400  
 IMAGE_SIZE = 'normal'
 
 TARGET_TYPES = ['Creature', 'Instant', 'Sorcery', 'Enchantment', 'Artifact', 'Planeswalker', 'Land']
