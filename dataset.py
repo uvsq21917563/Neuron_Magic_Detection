@@ -115,21 +115,42 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
 
-for epoch in range(5):
+num_epochs = 20
+
+for epoch in range(num_epochs):
     model.train()
+    
+    epoch_loss = 0.0
+    n_batches = 0
+
     for batch in train_loader:
-        if batch is None: continue
+        if batch is None:
+            continue
+
         images, (types, rarities, colors) = batch
-        images, types, rarities, colors = images.to(device), types.to(device), rarities.to(device), colors.to(device)
+        images = images.to(device)
+        types = types.to(device)
+        rarities = rarities.to(device)
+        colors = colors.to(device)
 
         optimizer.zero_grad()
+
         out_type, out_rarity, out_colors = model(images)
-        
-        loss = criterion_ce(out_type, types) + criterion_ce(out_rarity, rarities) + criterion_bce(out_colors, colors)
+
+        loss_type = criterion_ce(out_type, types)
+        loss_rarity = criterion_ce(out_rarity, rarities)
+        loss_colors = criterion_bce(out_colors, colors)
+
+        loss = loss_type + loss_rarity + loss_colors
+
         loss.backward()
         optimizer.step()
-    
-    print(f"Epoch {epoch+1} terminée. Loss: {loss.item():.4f}")
+
+        epoch_loss += loss.item()
+        n_batches += 1
+
+    avg_loss = epoch_loss / n_batches
+    print(f"Epoch {epoch+1} terminée. Loss moyenne: {avg_loss:.4f}")
 
 # --------------------------
 # 6. Test
@@ -162,7 +183,7 @@ with torch.no_grad():
         # Extraction des résultats
         pred_type_idx = torch.argmax(out_type, dim=1).item()
         pred_rarity_idx = torch.argmax(out_rarity, dim=1).item()
-        pred_colors = (out_colors > 0.3).int().cpu().numpy()[0] # Seuil de 50% pour les couleurs
+        pred_colors = (out_colors > 0.5).int().cpu().numpy()[0] # Seuil de 50% pour les couleurs
         
         
         # Réel
