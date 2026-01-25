@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from torch import nn, optim
+from torch.optim import lr_scheduler
 from PIL import Image
 
 # --------------------------
@@ -72,12 +73,15 @@ mtg_dir = os.path.join(base_dir, "mtg_dataset")
 # On charge les deux séparément
 train_csv = os.path.join(mtg_dir, "Train.csv")
 test_csv = os.path.join(mtg_dir, "Test.csv")
+val_csv = os.path.join(mtg_dir, "Val.csv")
 
 train_dataset = MagicCardDataset(csv_file=train_csv, base_img_dir=mtg_dir, transform=transform)
 test_dataset = MagicCardDataset(csv_file=test_csv, base_img_dir=mtg_dir, transform=transform)
+val_dataset = MagicCardDataset(csv_file=val_csv, base_img_dir=mtg_dir, transform=transform)
 
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_fn)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
+test_loader = DataLoader(test_dataset, batch_size=128, shuffle=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=64, shuffle=True, collate_fn=collate_fn)
 
 # --------------------------
 # 4. Modèle
@@ -112,11 +116,17 @@ model = MultiOutputModel(num_types, num_rarities, num_colors).to(device)
 # 5. Entraînement
 # --------------------------
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=3)
 criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
+best_val_loss = float('inf')
+best_model_path = os.path.join(base_dir, "best_model.pth")
 
 for epoch in range(30):
     model.train()
+    train_loss = 0.0
+    num_batches = 0
+    
     for batch in train_loader:
         if batch is None: continue
         images, (types, rarities, colors) = batch
@@ -128,12 +138,45 @@ for epoch in range(30):
         loss = criterion_ce(out_type, types) + criterion_ce(out_rarity, rarities) + criterion_bce(out_colors, colors)
         loss.backward()
         optimizer.step()
+        train_loss += loss.item()
+        num_batches += 1
     
-    print(f"Epoch {epoch+1} terminée. Loss: {loss.item():.4f}")
+    avg_loss = train_loss / num_batches if num_batches > 0 else 0
+    
+    # Étape de validation
+    model.eval()
+    val_loss = 0.0
+    val_batches = 0
+    with torch.no_grad():
+        for batch in val_loader:
+            if batch is None: continue
+            images, (types, rarities, colors) = batch
+            images, types, rarities, colors = images.to(device), types.to(device), rarities.to(device), colors.to(device)
+            
+            out_type, out_rarity, out_colors = model(images)
+            loss = criterion_ce(out_type, types) + criterion_ce(out_rarity, rarities) + criterion_bce(out_colors, colors)
+            val_loss += loss.item()
+            val_batches += 1
+    
+    avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
+    scheduler.step(avg_val_loss)
+    current_lr = optimizer.param_groups[0]['lr']
+    
+    # Sauvegarder le meilleur modèle
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        torch.save(model.state_dict(), best_model_path)
+        print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.2e} ---New High Score !!!---")
+    else:
+        print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.2e}")
 
 # --------------------------
 # 6. Test
 # --------------------------
+
+# Charger le meilleur modèle
+#model.load_state_dict(torch.load(best_model_path))
+
 print("\n--- ÉVALUATION SUR LE DATASET DE TEST ---")
 model.eval()
 
@@ -155,44 +198,57 @@ with torch.no_grad():
         
         images, (types, rarities, colors) = batch
         images = images.to(device)
+        types = types.to(device)
+        rarities = rarities.to(device)
+        colors = colors.to(device)
         
         # Prédiction
         out_type, out_rarity, out_colors = model(images)
         
-        # Extraction des résultats
-        pred_type_idx = torch.argmax(out_type, dim=1).item()
-        pred_rarity_idx = torch.argmax(out_rarity, dim=1).item()
-        pred_colors = (out_colors > 0.3).int().cpu().numpy()[0] # Seuil de 50% pour les couleurs
-        
+        # Extraction des résultats pour chaque élément du batch
+        pred_types = torch.argmax(out_type, dim=1)
+        pred_rarities = torch.argmax(out_rarity, dim=1)
+        pred_colors_batch = (out_colors > 0.3).int().cpu().numpy()
         
         # Réel
-        true_type_idx = types.item()
-        true_rarity_idx = rarities.item()
-        true_colors = colors.cpu().numpy()[0]
+        true_types = types.cpu().numpy()
+        true_rarities = rarities.cpu().numpy()
+        true_colors_batch = colors.cpu().numpy()
 
+        # Boucle sur les éléments du batch
+        batch_size = len(images)
+        for j in range(batch_size):
+            pred_type_idx = pred_types[j].item()
+            pred_rarity_idx = pred_rarities[j].item()
+            pred_colors = pred_colors_batch[j]
+            
+            true_type_idx = true_types[j]
+            true_rarity_idx = true_rarities[j]
+            true_colors = true_colors_batch[j]
 
-        total += 1
-        type_ok += int(pred_type_idx == true_type_idx)
-        rarity_ok += int(pred_rarity_idx == true_rarity_idx)
-        color_ok += int((pred_colors == true_colors).all())
+            total += 1
+            type_ok += int(pred_type_idx == true_type_idx)
+            rarity_ok += int(pred_rarity_idx == true_rarity_idx)
+            color_ok += int((pred_colors == true_colors).all())
 
-
-        print(f"\n--- Carte n°{i+1} ---")
-        
-        # Affichage Type
-        p_t = inv_types[pred_type_idx]
-        r_t = inv_types[true_type_idx]
-        print(f"Type    : Prédit [{p_t:12}] | Réel [{r_t:12}] {'✅' if p_t == r_t else '❌'}")
-        
-        # Affichage Rareté
-        p_r = inv_rarities[pred_rarity_idx]
-        r_r = inv_rarities[true_rarity_idx]
-        print(f"Rareté  : Prédit [{p_r:12}] | Réel [{r_r:12}] {'✅' if p_r == r_r else '❌'}")
-        
-        # Affichage Couleurs
-        p_c = [color_names[j] for j, val in enumerate(pred_colors) if val == 1]
-        t_c = [color_names[j] for j, val in enumerate(true_colors) if val == 1]
-        print(f"Couleurs: Prédit {p_c} | Réel   {t_c} {'✅' if p_c == t_c else '❌'}")
+            # Afficher seulement les 20 premiers
+            if total <= 20:
+                print(f"\n--- Carte n°{total} ---")
+                
+                # Affichage Type
+                p_t = inv_types[pred_type_idx]
+                r_t = inv_types[true_type_idx]
+                print(f"Type    : Prédit [{p_t:12}] | Réel [{r_t:12}] {'✅' if p_t == r_t else '❌'}")
+                
+                # Affichage Rareté
+                p_r = inv_rarities[pred_rarity_idx]
+                r_r = inv_rarities[true_rarity_idx]
+                print(f"Rareté  : Prédit [{p_r:12}] | Réel [{r_r:12}] {'✅' if p_r == r_r else '❌'}")
+                
+                # Affichage Couleurs
+                p_c = [color_names[k] for k, val in enumerate(pred_colors) if val == 1]
+                t_c = [color_names[k] for k, val in enumerate(true_colors) if val == 1]
+                print(f"Couleurs: Prédit {p_c} | Réel   {t_c} {'✅' if p_c == t_c else '❌'}")
 
 # Taux de précision sur type, rareté, couleur
 print(f"Précision sur le type    : {100 * type_ok / total:.2f}%")
