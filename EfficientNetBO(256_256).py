@@ -115,7 +115,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
 
-for epoch in range(20):
+for epoch in range(30):
     model.train()
     for batch in train_loader:
         if batch is None: continue

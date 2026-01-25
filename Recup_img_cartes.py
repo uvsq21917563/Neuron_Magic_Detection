@@ -21,9 +21,9 @@ FILES = {
 JSON_FILE = "default_cards.json"
 
 # Taille des datasets
-LIMIT_TRAIN = 200
-LIMIT_VAL = 50
-LIMIT_TEST = 50
+LIMIT_TRAIN = 3000
+LIMIT_VAL = 600
+LIMIT_TEST = 600
 TOTAL_NEEDED = LIMIT_TRAIN + LIMIT_VAL + LIMIT_TEST
 
 IMAGE_SIZE = 'normal'
@@ -55,7 +55,6 @@ def reset_dataset():
             os.remove(csv_file)
 
 def get_main_type(type_line):
-    # Exclusion explicite des tokens
     if "Token" in type_line: 
         return "Other"
     for t in TARGET_TYPES:
