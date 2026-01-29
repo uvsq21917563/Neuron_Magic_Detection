@@ -13,14 +13,17 @@ import json
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_NAME = 'google/vit-base-patch16-224'
 DATA_DIR = "mtg_dataset"
+
+# Chemins mis à jour
 TRAIN_CSV = os.path.join(DATA_DIR, "Train.csv")
 VAL_CSV = os.path.join(DATA_DIR, "Val.csv")
 TEST_CSV = os.path.join(DATA_DIR, "Test.csv")
-MODEL_SAVE_PATH = "mtg_vit_final.pth"
+
+MODEL_SAVE_PATH = "mtg_vit_best_model.pth"
+HISTORY_SAVE_PATH = "vit_history.json"
 CLASS_NAMES_PATH = "class_names.json"
 
 # --- 1. PREPARATION DES LABELS ---
-# On lit tous les CSV pour identifier TOUTES les catégories possibles une fois pour toutes
 all_dfs = [pd.read_csv(TRAIN_CSV), pd.read_csv(VAL_CSV), pd.read_csv(TEST_CSV)]
 combined_df = pd.concat(all_dfs)
 
@@ -28,7 +31,6 @@ TYPE_LIST = sorted(combined_df['type'].unique().tolist())
 RARITY_LIST = sorted(combined_df['rarity'].unique().tolist())
 COLOR_NAMES = ['Blanc', 'Bleu', 'Noir', 'Rouge', 'Vert', 'Incolore']
 
-# Sauvegarde des noms de classes pour le futur
 with open(CLASS_NAMES_PATH, 'w') as f:
     json.dump({'types': TYPE_LIST, 'rarities': RARITY_LIST}, f)
 
@@ -46,12 +48,13 @@ class MTGDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-        img_path = os.path.join(self.img_dir, row['image_path'])
+        # On s'assure que le chemin de l'image est correct (Linux/Windows)
+        clean_img_path = row['image_path'].replace('\\', '/')
+        img_path = os.path.join(self.img_dir, clean_img_path)
         
         try:
             image = Image.open(img_path).convert("RGB")
         except Exception:
-            # Si image corrompue, on renvoie une image noire (pour ne pas crash le batch)
             image = Image.new('RGB', (224, 224))
 
         if self.transform:
@@ -76,12 +79,11 @@ class ViTMTG(nn.Module):
         self.color_head = nn.Linear(hidden_size, 6)
 
     def forward(self, x):
-        # ViT de HuggingFace attend 'pixel_values'
         outputs = self.vit(pixel_values=x)
         cls_token = outputs.last_hidden_state[:, 0, :]
         return self.type_head(cls_token), self.rarity_head(cls_token), self.color_head(cls_token)
 
-# --- 4. FONCTIONS D'ENTRAINEMENT ET TEST ---
+# --- 4. FONCTIONS DE CYCLE ---
 def train_one_epoch(model, loader, optimizer, criterion_ce, criterion_bce):
     model.train()
     total_loss = 0
@@ -95,6 +97,17 @@ def train_one_epoch(model, loader, optimizer, criterion_ce, criterion_bce):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+    return total_loss / len(loader)
+
+def calcul_validation(model, loader, criterion_ce, criterion_bce):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for imgs, types, rarities, colors in tqdm(loader, desc="Validation"):
+            imgs, types, rarities, colors = imgs.to(DEVICE), types.to(DEVICE), rarities.to(DEVICE), colors.to(DEVICE)
+            out_t, out_r, out_c = model(imgs)
+            loss = criterion_ce(out_t, types) + criterion_ce(out_r, rarities) + criterion_bce(out_c, colors)
+            total_loss += loss.item()
     return total_loss / len(loader)
 
 def evaluate(model, loader):
@@ -125,14 +138,13 @@ def evaluate(model, loader):
                 color_ok += c_match
                 if t_match and r_match and c_match: perfect_ok += 1
 
-                # Affichage textuel pour chaque carte
-                str_p_c = [COLOR_NAMES[k] for k, v in enumerate(p_c[i]) if v == 1]
-                str_t_c = [COLOR_NAMES[k] for k, v in enumerate(colors[i]) if v == 1]
-
-                print(f"\nCarte #{total}")
-                print(f"  TYPE    : Prédit [{TYPE_LIST[p_t[i]]:12}] | Réel [{TYPE_LIST[types[i]]:12}] {'✅' if t_match else '❌'}")
-                print(f"  RARETE  : Prédit [{RARITY_LIST[p_r[i]]:12}] | Réel [{RARITY_LIST[rarities[i]]:12}] {'✅' if r_match else '❌'}")
-                print(f"  COULEUR : Prédit {str(str_p_c):25} | Réel {str(str_t_c):25} {'✅' if c_match else '❌'}")
+                if total <= 10: # On limite l'affichage pour plus de clarté
+                    str_p_c = [COLOR_NAMES[k] for k, v in enumerate(p_c[i]) if v == 1]
+                    str_t_c = [COLOR_NAMES[k] for k, v in enumerate(colors[i]) if v == 1]
+                    print(f"\nCarte #{total}")
+                    print(f"  TYPE    : Prédit [{TYPE_LIST[p_t[i]]:12}] | Réel [{TYPE_LIST[types[i]]:12}] {'✅' if t_match else '❌'}")
+                    print(f"  RARETE  : Prédit [{RARITY_LIST[p_r[i]]:12}] | Réel [{RARITY_LIST[rarities[i]]:12}] {'✅' if r_match else '❌'}")
+                    print(f"  COULEUR : Prédit {str(str_p_c):25} | Réel {str(str_t_c):25} {'✅' if c_match else '❌'}")
 
     print("\n" + "="*50)
     print(f"SCORE FINAL SUR {total} CARTES")
@@ -151,21 +163,56 @@ def main():
     ])
 
     train_ds = MTGDataset(TRAIN_CSV, DATA_DIR, transform=transform)
+    val_ds = MTGDataset(VAL_CSV, DATA_DIR, transform=transform)
     test_ds = MTGDataset(TEST_CSV, DATA_DIR, transform=transform)
+
     train_loader = DataLoader(train_ds, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=16, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=16, shuffle=False)
 
     model = ViTMTG(len(TYPE_LIST), len(RARITY_LIST)).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    
+    # Scheduler pour réduire le LR si la val_loss ne baisse plus
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=2)
+    
     criterion_ce = nn.CrossEntropyLoss()
     criterion_bce = nn.BCEWithLogitsLoss()
 
-    # Entraînement rapide (2 époques pour tester)
-    for epoch in range(10):
-        loss = train_one_epoch(model, train_loader, optimizer, criterion_ce, criterion_bce)
-        print(f"Epoch {epoch+1} Loss: {loss:.4f}")
+    best_val_loss = float('inf')
+    history = {"train_loss": [], "val_loss": []}
 
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
+    print(f"Démarrage de l'entraînement sur {DEVICE}...")
+
+    for epoch in range(30):
+        # Phase de train
+        avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterion_ce, criterion_bce)
+        
+        # Phase de validation
+        avg_val_loss = calcul_validation(model, val_loader, criterion_ce, criterion_bce)
+        
+        history["train_loss"].append(avg_train_loss)
+        history["val_loss"].append(avg_val_loss)
+        
+        scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+
+        # Sauvegarde si c'est le meilleur modèle vu jusqu'ici
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), MODEL_SAVE_PATH)
+            status = "--- Nouveau meilleur score ! ---"
+        else:
+            status = ""
+
+        print(f"Epoch {epoch+1}/10 | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.2e} {status}")
+
+        with open(HISTORY_SAVE_PATH, 'w') as f:
+            json.dump(history, f)
+
+    # Recharger le meilleur modèle pour l'évaluation finale
+    print("\nChargement du meilleur modèle pour le test...")
+    model.load_state_dict(torch.load(MODEL_SAVE_PATH))
     evaluate(model, test_loader)
 
 if __name__ == "__main__":
