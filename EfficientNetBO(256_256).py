@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import torch
+import json
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from torch import nn, optim
@@ -120,7 +121,10 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0
 criterion_ce = nn.CrossEntropyLoss()
 criterion_bce = nn.BCELoss()
 best_val_loss = float('inf')
-best_model_path = os.path.join(base_dir, "best_model.pth")
+
+best_model_path = os.path.join("saved_models", "best_model_cnn.pth")
+loss_save_path = os.path.join("saved_losses", "cnn_history.json")
+history = {"train_loss": [], "val_loss": []}
 
 for epoch in range(30):
     model.train()
@@ -159,6 +163,13 @@ for epoch in range(30):
             val_batches += 1
     
     avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
+    
+    history["train_loss"].append(avg_loss)
+    history["val_loss"].append(avg_val_loss)
+    
+    with open(loss_save_path, 'w') as f:
+        json.dump(history, f)
+
     scheduler.step(avg_val_loss)
     current_lr = optimizer.param_groups[0]['lr']
     
