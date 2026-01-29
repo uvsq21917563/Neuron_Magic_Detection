@@ -21,9 +21,9 @@ FILES = {
 JSON_FILE = "default_cards.json"
 
 # Taille des datasets
-LIMIT_TRAIN = 3000
-LIMIT_VAL = 600
-LIMIT_TEST = 600
+LIMIT_TRAIN = 1000
+LIMIT_VAL = 100
+LIMIT_TEST = 100
 TOTAL_NEEDED = LIMIT_TRAIN + LIMIT_VAL + LIMIT_TEST
 
 IMAGE_SIZE = 'normal'
@@ -48,7 +48,7 @@ def reset_dataset():
         if os.path.exists(folder):
             shutil.rmtree(folder)
         os.makedirs(folder)
-        print(f" Dossier {folder} recréé.")
+        print(f" ancien dossier {folder} supprimé.")
 
     for key, csv_file in FILES.items():
         if os.path.exists(csv_file):
@@ -118,7 +118,8 @@ def download_and_save(card_list, dataset_name):
             'is_black': 1 if 'B' in identity else 0,
             'is_red': 1 if 'R' in identity else 0,
             'is_green': 1 if 'G' in identity else 0,
-            'is_colorless': 1 if len(identity) == 0 else 0
+            'is_colorless': 1 if len(identity) == 0 else 0,
+            'name': card['name']  # <-- AJOUT : Nom de la carte en dernière colonne
         }
         data_rows.append(row)
         
