@@ -6,6 +6,20 @@ import pandas as pd
 import shutil
 import random
 
+def download_bulk_metadata():
+    """Télécharge le fichier JSON global de Scryfall s'il n'existe pas déjà."""
+    if not os.path.exists(JSON_FILE):
+        print("Récupération de l'URL du bulk data...")
+        resp = requests.get("https://api.scryfall.com/bulk-data")
+        bulk_url = next(item for item in resp.json()['data'] if item['type'] == 'default_cards')['download_uri']
+        
+        print(f"Téléchargement du JSON global (cela peut prendre du temps)...")
+        r = requests.get(bulk_url, stream=True)
+        with open(JSON_FILE, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return JSON_FILE
+
 # --- CONFIGURATION ---
 DATA_DIR = "mtg_dataset"
 DIRS = {
@@ -21,9 +35,9 @@ FILES = {
 JSON_FILE = "default_cards.json"
 
 # Taille des datasets
-LIMIT_TRAIN = 1000
-LIMIT_VAL = 100
-LIMIT_TEST = 100
+LIMIT_TRAIN = 100
+LIMIT_VAL = 10
+LIMIT_TEST = 10
 TOTAL_NEEDED = LIMIT_TRAIN + LIMIT_VAL + LIMIT_TEST
 
 IMAGE_SIZE = 'normal'
@@ -213,4 +227,5 @@ def process_cards():
     print("\n--- Opération Terminée ---")
 
 if __name__ == "__main__":
+    download_bulk_metadata()
     process_cards()
