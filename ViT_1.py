@@ -12,15 +12,19 @@ import json
 # --- CONFIGURATION ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_NAME = 'google/vit-base-patch16-224'
+CURRENT_DIR = os.getcwd()
 DATA_DIR = "mtg_dataset"
+MODEL_SAVE_DIR = os.path.join(CURRENT_DIR, "saved_losses")
+HISTORY_SAVE_DIR = os.path.join(CURRENT_DIR, "saved_models")
+EPOCHS = 2
 
 # Chemins mis à jour
 TRAIN_CSV = os.path.join(DATA_DIR, "Train.csv")
 VAL_CSV = os.path.join(DATA_DIR, "Val.csv")
 TEST_CSV = os.path.join(DATA_DIR, "Test.csv")
 
-MODEL_SAVE_PATH = "mtg_vit_best_model.pth"
-HISTORY_SAVE_PATH = "vit_history.json"
+MODEL_SAVE_PATH = os.path.join(MODEL_SAVE_DIR, f"best_model_vit_{EPOCHS}.pth")
+HISTORY_SAVE_PATH = os.path.join(HISTORY_SAVE_DIR, f"vit_losses_{EPOCHS}.json")
 CLASS_NAMES_PATH = "class_names.json"
 
 # --- 1. PREPARATION DES LABELS ---
@@ -184,7 +188,7 @@ def main():
 
     print(f"Démarrage de l'entraînement sur {DEVICE}...")
 
-    for epoch in range(30):
+    for epoch in range(EPOCHS):
         # Phase de train
         avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterion_ce, criterion_bce)
         
@@ -201,11 +205,11 @@ def main():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), MODEL_SAVE_PATH)
-            status = "--- Nouveau meilleur score ! ---"
+            status = "--- [SAVE] ---"
         else:
             status = ""
 
-        print(f"Epoch {epoch+1}/10 | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.2e} {status}")
+        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.2e} {status}")
 
         with open(HISTORY_SAVE_PATH, 'w') as f:
             json.dump(history, f)
